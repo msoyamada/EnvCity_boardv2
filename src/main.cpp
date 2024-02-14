@@ -9,17 +9,14 @@
 #include "aqm_envcity_config.h"
 #include "Alphasense_GasSensors.hpp"
 
+// -------------------------------------------------------------------------------------------------------------------
+
 #define _SDA_ 10
 #define _SCL_ 11
-//enum {S0 = 2, S1 = 1, S2 = 17, S3 = 18}; // MUX PINS
 
-gpio_num_t pins[] = {GPIO_NUM_2, GPIO_NUM_1, GPIO_NUM_17, GPIO_NUM_18};
-mux Mux(pins, 4);
+// -------------------------------------------------------------------------------------------------------------------
 
-Adafruit_ADS1115 ads;
-
-int16_t temp = 0, umid = 0;
-
+//ALPHASENSE ------------------------------------------------------------------------------------------------------------
 // NO2 -> ---
 AlphasenseSensorParam param5 = {"NO2", NO2B43F_n, -0.73, 222, 212, -424, 0.31, 230, 220, 0};
 Alphasense_NO2 no2(param5);
@@ -47,11 +44,45 @@ float getBestNO2Value(float no2_ppb[]) {
 }
 
 float bestNO2Value = 0;
+//ALPHASENSE ------------------------------------------------------------------------------------------------------------
+
+//MUX -------------------------------------------------------------------------------------------------------------------
+//enum {S0 = 2, S1 = 1, S2 = 17, S3 = 18}; // MUX PINS
+gpio_num_t pins[] = {GPIO_NUM_2, GPIO_NUM_1, GPIO_NUM_17, GPIO_NUM_18};
+mux Mux(pins, 4);
+//MUX -------------------------------------------------------------------------------------------------------------------
+
+//ADS -------------------------------------------------------------------------------------------------------------------
+Adafruit_ADS1115 ads;
+
+void ads_setup()
+{
+  // Configure gain for ADS1115
+  ads.setGain(GAIN_TWOTHIRDS);
+
+  // Initialize ADS1115 and check for initialization success
+  if (!ads.begin(0x48)) { Serial.println("Failed to initialize ADS1115."); } 
+  else { Serial.println("ADS1115 initialized successfully."); }
+  delay(100);
+}
+
+float ads_read(int mux_output)
+{
+  uint16_t adc = 0;
+  float readed_voltage;
+  Mux.selectOutput(mux_output);                         //LEITURA
+  adc = ads.readADC_SingleEnded(0);
+  readed_voltage = ads.computeVolts(adc);
+  ets_delay_us(10);
+  return readed_voltage;
+}
+//ADS -------------------------------------------------------------------------------------------------------------------
 
 //SHT -------------------------------------------------------------------------------------------------------------------
 Adafruit_SHT31 sht = Adafruit_SHT31();
+int16_t temp = 0, umid = 0;
 
-void setup_sht()
+void sht_setup()
 {
   Serial.println("SHT31 test");
   if (! sht.begin(0x44)) {   // Set to 0x45 for alternate i2c addr
@@ -59,9 +90,10 @@ void setup_sht()
     while (1) delay(1);
   }
   Serial.println("Found SHT31 sensor");
+  delay(100);
 }
 
-float read_sht(bool temp_humd) // true for temperature, false for humidity
+float sht_read(bool temp_humd) // true for temperature, false for humidity
 {
   if(temp_humd)
   {
@@ -84,40 +116,33 @@ void setup()
   Wire.begin(_SDA_, _SCL_, 100000);
   delay(5000);
 
-  // Configure gain for ADS1115
-  ads.setGain(GAIN_TWOTHIRDS);
-
-  // Initialize ADS1115 and check for initialization success
-  if (!ads.begin(0x48)) { Serial.println("Failed to initialize ADS1115."); } 
-  else { Serial.println("ADS1115 initialized successfully."); }
-
-  setup_sht();
+  sht_setup();
+  ads_setup();
 }
 
 float no2_ppb[4]; 
 
 void loop()
 {
-  uint16_t adc = 0;
-  float readed_voltage[1];
-  Mux.selectOutput(0);
-  adc = ads.readADC_SingleEnded(0);
-  readed_voltage[0]= ads.computeVolts(adc);
-  ets_delay_us(10);
+  float readed_voltage_we;
+  float readed_voltage_ae;
 
-  Mux.selectOutput(1);
-  adc = ads.readADC_SingleEnded(0);
-  readed_voltage[1] = ads.computeVolts(adc);
-  ets_delay_us(10);
+  readed_voltage_we = ads_read(0); //lendo mux porta 0
 
-  float temp = read_sht(true);
+  readed_voltage_ae = ads_read(1); //lendo mux porta 1
 
-  no2.fourAlgorithms(1000*readed_voltage[0], 1000*readed_voltage[1], no2_ppb, temp);
+  float temp = sht_read(true);
 
-  // Checks the values for NO2 and then process the OX sensor data
+  no2.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, no2_ppb, temp);
+
+  // Checks the values for NO2
   bestNO2Value = getBestNO2Value(no2_ppb);
 
   Serial.print("Temp: ");  Serial.println(temp);
-  Serial.print("Umid: ");  Serial.println(read_sht(false));
+  Serial.print("Umid: ");  Serial.println(sht_read(false));
   Serial.print("NO2: ");   Serial.println(no2_ppb[0]);
+  Serial.print("best NO2: ");   Serial.println(no2_ppb[0]);
+  Serial.println(" ");
+
+  delay(1000);
 }
