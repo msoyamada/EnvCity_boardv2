@@ -14,12 +14,21 @@
 #define _SDA_ 10
 #define _SCL_ 11
 
+#define _S0_ 2
+#define _S1_ 1
+#define _S2_ 17
+#define _S3_ 18
+
 // -------------------------------------------------------------------------------------------------------------------
 
 //ALPHASENSE ------------------------------------------------------------------------------------------------------------
 // NO2 -> ---
 AlphasenseSensorParam param5 = {"NO2", NO2B43F_n, -0.73, 222, 212, -424, 0.31, 230, 220, 0};
 Alphasense_NO2 no2(param5);
+
+// COB4 -> 354
+AlphasenseSensorParam param1 = {"CO-B4", COB4_n, 0.8, 330, 316, 510, 0.408, 336, 321, 0};
+Alphasense_COB4 cob4_s1(param1);
 
 bool isValid(float value) {
     const float MIN_VALID = 0.0;   
@@ -66,14 +75,18 @@ void ads_setup()
   delay(100);
 }
 
-float ads_read(int mux_output)
+float ads_read(int mux_output, bool print)
 {
   uint16_t adc = 0;
   float readed_voltage;
   Mux.selectOutput(mux_output);                         //LEITURA
+  delay(2000);
   adc = ads.readADC_SingleEnded(0);
   readed_voltage = ads.computeVolts(adc);
+  delay(2000);
   ets_delay_us(10);
+  if(print)
+    printf("\nReaded voltage on port %i: %f \n", (int)mux_output, readed_voltage);
   return readed_voltage;
 }
 //ADS -------------------------------------------------------------------------------------------------------------------
@@ -107,6 +120,12 @@ float sht_read(bool temp_humd) // true for temperature, false for humidity
   }
   return 9999;
 }
+
+void sht_print()
+{
+  Serial.print("Temp: ");  Serial.println(sht_read(true));
+  Serial.print("Umid: ");  Serial.println(sht_read(false));
+}
 //SHT -------------------------------------------------------------------------------------------------------------------
 
 void setup()
@@ -121,28 +140,43 @@ void setup()
 }
 
 float no2_ppb[4]; 
+float co_ppb[4];
 
 void loop()
 {
   float readed_voltage_we;
   float readed_voltage_ae;
 
-  readed_voltage_we = ads_read(0); //lendo mux porta 0
-
-  readed_voltage_ae = ads_read(1); //lendo mux porta 1
-
+  //readed_voltage_we = ads_read(0, true); //lendo mux porta 0
+  //readed_voltage_ae = ads_read(1, true); //lendo mux porta 1
+  readed_voltage_we = 0.218; //lido por multímetro
+  readed_voltage_ae = 0.187; //lido por multímetro
   float temp = sht_read(true);
-
   no2.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, no2_ppb, temp);
-
-  // Checks the values for NO2
   bestNO2Value = getBestNO2Value(no2_ppb);
 
-  Serial.print("Temp: ");  Serial.println(temp);
-  Serial.print("Umid: ");  Serial.println(sht_read(false));
-  Serial.print("NO2: ");   Serial.println(no2_ppb[0]);
-  Serial.print("best NO2: ");   Serial.println(no2_ppb[0]);
+  sht_print();
+  Serial.print("NO2 [0]: ");   Serial.println(no2_ppb[0]);
+  Serial.print("NO2 [1]: ");   Serial.println(no2_ppb[1]);
+  Serial.print("NO2 [2]: ");   Serial.println(no2_ppb[2]);
+  Serial.print("NO2 [3]: ");   Serial.println(no2_ppb[3]);
+  Serial.print("best NO2: ");   Serial.println(bestNO2Value);
+
+
+  //readed_voltage_we = ads_read(2, true);
+  //readed_voltage_ae = ads_read(3, true);
+  readed_voltage_we = 0.556; //lido por multímetro
+  readed_voltage_ae = 0.336; //lido por multímetro
+  temp = sht_read(true);
+  cob4_s1.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, co_ppb, temp);
+
+  sht_print();
+  Serial.print("COB4 [0]: ");   Serial.println(co_ppb[0]);
+  Serial.print("COB4 [1]: ");   Serial.println(co_ppb[1]);
+  Serial.print("COB4 [2]: ");   Serial.println(co_ppb[2]);
+  Serial.print("COB4 [3]: ");   Serial.println(co_ppb[3]);
   Serial.println(" ");
 
   delay(1000);
+
 }
