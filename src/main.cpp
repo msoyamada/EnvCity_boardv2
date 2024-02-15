@@ -80,10 +80,10 @@ float ads_read(int mux_output, bool print)
   uint16_t adc = 0;
   float readed_voltage;
   Mux.selectOutput(mux_output);                         //LEITURA
-  delay(2000);
+  //delay(2000);
   adc = ads.readADC_SingleEnded(0);
   readed_voltage = ads.computeVolts(adc);
-  delay(2000);
+  //delay(741);
   ets_delay_us(10);
   if(print)
     printf("\nReaded voltage on port %i: %f \n", (int)mux_output, readed_voltage);
@@ -141,16 +141,32 @@ void setup()
 
 float no2_ppb[4]; 
 float co_ppb[4];
+uint16_t adc;
 
 void loop()
 {
   float readed_voltage_we;
   float readed_voltage_ae;
 
+  Serial.println("========= NO2 =========");
   //readed_voltage_we = ads_read(0, true); //lendo mux porta 0
   //readed_voltage_ae = ads_read(1, true); //lendo mux porta 1
   readed_voltage_we = 0.218; //lido por multímetro
   readed_voltage_ae = 0.187; //lido por multímetro
+
+  /*Mux.selectOutput(0);                                          // ADS READ
+  adc = ads.readADC_SingleEnded(0);
+  readed_voltage_we = ads.computeVolts(adc);
+  ets_delay_us(10);
+  printf("\nReaded voltage on port 0: %f \n", readed_voltage_we);
+  delay(741);
+  Mux.selectOutput(1);
+  adc = ads.readADC_SingleEnded(0);
+  readed_voltage_ae = ads.computeVolts(adc);
+  ets_delay_us(10);
+  printf("\nReaded voltage on port 1: %f \n", readed_voltage_ae);*/
+
+
   float temp = sht_read(true);
   no2.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, no2_ppb, temp);
   bestNO2Value = getBestNO2Value(no2_ppb);
@@ -160,9 +176,9 @@ void loop()
   Serial.print("NO2 [1]: ");   Serial.println(no2_ppb[1]);
   Serial.print("NO2 [2]: ");   Serial.println(no2_ppb[2]);
   Serial.print("NO2 [3]: ");   Serial.println(no2_ppb[3]);
-  Serial.print("best NO2: ");   Serial.println(bestNO2Value);
+  Serial.print("best NO2: ");   Serial.println(bestNO2Value); Serial.println(" ");
 
-
+  Serial.println("========= CO =========");
   //readed_voltage_we = ads_read(2, true);
   //readed_voltage_ae = ads_read(3, true);
   readed_voltage_we = 0.556; //lido por multímetro
@@ -174,8 +190,7 @@ void loop()
   Serial.print("COB4 [0]: ");   Serial.println(co_ppb[0]);
   Serial.print("COB4 [1]: ");   Serial.println(co_ppb[1]);
   Serial.print("COB4 [2]: ");   Serial.println(co_ppb[2]);
-  Serial.print("COB4 [3]: ");   Serial.println(co_ppb[3]);
-  Serial.println(" ");
+  Serial.print("COB4 [3]: ");   Serial.println(co_ppb[3]); Serial.println(" ");
 
   delay(1000);
 
