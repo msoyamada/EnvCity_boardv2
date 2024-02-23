@@ -1,4 +1,4 @@
-#ifndef AQM_ENVCITY_CONFIG_H
+/*#ifndef AQM_ENVCITY_CONFIG_H
 #define AQM_ENVCITY_CONFIG_H
 
 #include <stdint.h>
@@ -57,4 +57,4 @@ typedef struct __attribute__((packed)) _sensor_voltage{
 
 } SensorVoltage;
 
-#endif // AQM_ENVCITY_CONFIG_H
+#endif // AQM_ENVCITY_CONFIG_H*/

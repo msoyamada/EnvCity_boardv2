@@ -1,6 +1,8 @@
 #include <iostream>
 #include <Wire.h>
 #include <SPI.h>
+#include <SD.h>               
+#include <FS.h>               
 
 #include <Adafruit_ADS1X15.h>
 #include <Adafruit_SHT31.h>
@@ -9,17 +11,45 @@
 #include "aqm_envcity_config.h"
 #include "Alphasense_GasSensors.hpp"
 
-// -------------------------------------------------------------------------------------------------------------------
+// CONFIGS --------------------------------------------------------------------------------------------------------------
 
+//SD SPI
+#define _SD_MOSI_ 7
+#define _SD_MISO_ 5
+#define _SD_SCK_ 6
+#define _SD_CS_ 15
+
+//I2C
 #define _SDA_ 10
 #define _SCL_ 11
 
-#define _S0_ 2
-#define _S1_ 1
-#define _S2_ 17
-#define _S3_ 18
+//Sensor analog pins
+enum sensor_analog_pins{
+  CO_WE_PIN,CO_AE_PIN,
+  NO2_WE_PIN, NO2_AE_PIN, 
+  OX_WE_PIN, OX_AE_PIN, 
+  NH3_WE_PIN, NH3_AE_PIN,
+  TOTAL_ANALOG_PINS,
+};
 
-// -------------------------------------------------------------------------------------------------------------------
+
+typedef struct _sensors_readings{
+  float co_ppb[4];
+  float nh3_ppb[4];
+  float no2_ppb[4];
+  float no2_best_value;
+  //float so2_ppb[4];
+  float ox_ppb[4];
+  //float h2s_ppb;
+  float analog[TOTAL_ANALOG_PINS];
+
+  float temp;            // 28, 29, 30, 31
+  float humidity;        // 32,
+} SensorsReadings;
+
+SensorsReadings readings;
+
+// CONFIGS --------------------------------------------------------------------------------------------------------------
 
 //ALPHASENSE ------------------------------------------------------------------------------------------------------------
 // NO2 -> ---
@@ -29,6 +59,13 @@ Alphasense_NO2 no2(param5);
 // COB4 -> 354
 AlphasenseSensorParam param1 = {"CO-B4", COB4_n, 0.8, 330, 316, 510, 0.408, 336, 321, 0};
 Alphasense_COB4 cob4_s1(param1);
+
+// OX -> ---
+AlphasenseSensorParam param4 = {"0X", OXB431_n, -0.73, 229, 234, -506, 0.369, 237, 242, -587};
+Alphasense_OX ox(param4);
+
+AlphasenseSensorParam param2 = {"NH3-B1", COB4_n, 0.8, 775, 277, 59, 0.047, 277, 278, 0};
+Alphasense_NH3 nh3(param2);
 
 bool isValid(float value) {
     const float MIN_VALID = 0.0;   
@@ -51,8 +88,6 @@ float getBestNO2Value(float no2_ppb[]) {
     if (validCount > 0) { return sum / validCount; }
     else { return -1; }
 }
-
-float bestNO2Value = 0;
 //ALPHASENSE ------------------------------------------------------------------------------------------------------------
 
 //MUX -------------------------------------------------------------------------------------------------------------------
@@ -63,6 +98,7 @@ mux Mux(pins, 4);
 
 //ADS -------------------------------------------------------------------------------------------------------------------
 Adafruit_ADS1115 ads;
+uint16_t adc = 0;
 
 void ads_setup()
 {
@@ -77,11 +113,10 @@ void ads_setup()
 
 float ads_read(int mux_output, bool print)
 {
-  uint16_t adc = 0;
   float readed_voltage;
   Mux.selectOutput(mux_output);                         //LEITURA
   //delay(2000);
-  adc = ads.readADC_SingleEnded(1);
+  adc = ads.readADC_SingleEnded(1);                     //pin aio1
   readed_voltage = ads.computeVolts(adc);
   //delay(741);
   ets_delay_us(10);
@@ -89,7 +124,93 @@ float ads_read(int mux_output, bool print)
     printf("\nReaded voltage on port %i: %f \n", (int)mux_output, readed_voltage);
   return readed_voltage;
 }
+
+void ads_all_read(float analog[TOTAL_ANALOG_PINS])
+{
+  for (uint8_t i = 0; i < TOTAL_ANALOG_PINS; i++)
+  {
+    Mux.selectOutput(i);
+    delayMicroseconds(5);
+    adc = ads.readADC_SingleEnded(1); 
+    analog[i] = ads.computeVolts(adc);
+  }
+}
 //ADS -------------------------------------------------------------------------------------------------------------------
+
+//SD --------------------------------------------------------------------------------------------------------------------
+SPIClass mySPI = SPIClass(HSPI); //SPI virtual
+
+void writeFile(fs::FS &fs, const char * path, const char * message) {
+  Serial.printf("Writing file: %s\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if(!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  if(file.print(message)) {
+    Serial.println("File written");
+  } else {
+    Serial.println("Write failed");
+  }
+  file.close();
+}
+
+void appendFile(fs::FS &fs, const char * path, const char * message) {
+  digitalWrite(_SD_CS_, HIGH);
+  digitalWrite(18, LOW);
+  Serial.printf("Appending to file: %s\n", path);
+  File file = fs.open(path, FILE_APPEND);
+  if(!file) {
+    Serial.println("Failed to open file for appending");
+    return;
+  }
+  if(file.print(message)) {
+    Serial.println("Message appended");
+  } else {
+    Serial.println("Append failed");
+  }
+  file.close();
+  digitalWrite(18, HIGH);
+  digitalWrite(_SD_CS_, LOW);
+}
+
+void setup_sd() 
+{
+  mySPI.begin(_SD_SCK_, _SD_MISO_, _SD_MOSI_);
+  if(!SD.begin(_SD_CS_, mySPI, 10000000))
+  {
+    Serial.println("Erro na leitura do arquivo não existe um cartão SD ou o módulo está conectado incorretamente...");
+    return;
+  }
+
+  uint8_t cardType = SD.cardType();
+  if(cardType == CARD_NONE) {
+    Serial.println("Nenhum cartao SD encontrado");
+    return;
+  }
+
+  Serial.println("Inicializando cartao SD...");
+  //if (!SD.begin(SD_CS, spi1)) 
+  if (!SD.begin(_SD_CS_)) 
+  {
+    Serial.println("ERRO - SD nao inicializado!");
+    return; 
+  }
+  File file = SD.open("/data.csv");
+  if(!file) 
+  {
+    Serial.println("SD: arquivo data.csv nao existe");
+    Serial.println("SD: Criando arquivo...");
+    writeFile(SD, "/data.csv", "TEMPERATURA; HUMIDADE; CO_PPB; CO_WE; CO_AE; NO2_PPB; NO2_WE; NO2_AE; OX_PPB; OX_WE; OX_AE; NH3_PPB; NH3_WE; NH3_AE; \r\n");
+  }
+  else {
+    Serial.println("SD: arquivo ja existe");  
+  }
+  file.close();
+}
+//SD --------------------------------------------------------------------------------------------------------------------
+
 
 //SHT -------------------------------------------------------------------------------------------------------------------
 Adafruit_SHT31 sht = Adafruit_SHT31();
@@ -128,22 +249,78 @@ void sht_print()
 }
 //SHT -------------------------------------------------------------------------------------------------------------------
 
+//PACK ------------------------------------------------------------------------------------------------------------------
+/*
+0 - temperatura    2 - co_ppb    5 - no2_ppb    8 - ox_ppb   11 - am_ppb
+1 - humidade       3 - co_we     6 - no2_we     9 - ox_we    12 - am_we
+                   4 - co_ae     7 - no2_ae    10 - ox_ae    13 - am_ae
+*/
+
+void print_packet()
+{
+  printf("Temperatura: %.2f \nHumidade: %.2f\n", readings.temp, readings.humidity);
+  printf("CO_PPB: %.5f\nCO_WE: %.5f\nCO_AE: %.5f\n", readings.co_ppb[0], readings.analog[CO_WE_PIN], readings.analog[CO_AE_PIN]);
+  printf("NO2_PPB: %.5f\nNO2_WE: %.5f\nNO2_AE: %.5f\n", readings.no2_best_value, readings.analog[NO2_WE_PIN], readings.analog[NO2_AE_PIN]);
+  printf("OX_PPB: %.5f\nOX_WE: %.5f\nOX_AE: %.5f\n", readings.ox_ppb[0], readings.analog[OX_WE_PIN], readings.analog[OX_AE_PIN]);
+  printf("NH3_PPB: %.5f\nNH3_WE: %.5f\nNH3_AE: %.5f\n\n", readings.nh3_ppb[0], readings.analog[NH3_WE_PIN], readings.analog[NH3_AE_PIN]);
+}
+
+//Contrução de pacote dos dados para anexação no SD
+void build_packet_to_SD(bool print)
+{
+  String leitura;
+  leitura.concat(String(readings.temp, 2)); leitura.concat(";");
+  leitura.concat(String(readings.humidity, 2)); leitura.concat(";");
+  leitura.concat(String(readings.co_ppb[0], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[CO_WE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[CO_AE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.no2_best_value, 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[NO2_WE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[NO2_AE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.ox_ppb[0], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[OX_WE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[OX_AE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.nh3_ppb[0], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[NH3_WE_PIN], 5)); leitura.concat(";");
+  leitura.concat(String(readings.analog[NH3_AE_PIN], 5)); leitura.concat("; \r\n");
+  
+  if(print)
+    Serial.println(leitura);
+  appendFile(SD, "/data.csv", leitura.c_str());
+}
+
+void build_packet(bool print)
+{
+  //leitura de todos os pinos analógicos
+  ads_all_read(readings.analog);
+
+  //temperatura e humidade
+  readings.temp = sht_read(true);
+  readings.humidity = sht_read(false);
+  cob4_s1.fourAlgorithms(1000*readings.analog[CO_WE_PIN], 1000*readings.analog[CO_AE_PIN], readings.co_ppb, readings.temp);
+  no2.fourAlgorithms(1000*readings.analog[NO2_WE_PIN], 1000*readings.analog[NO2_AE_PIN], readings.no2_ppb, readings.temp);
+  readings.no2_best_value = getBestNO2Value(readings.no2_ppb);
+  ox.fourAlgorithms(1000*readings.analog[OX_WE_PIN], 1000*readings.analog[OX_AE_PIN], readings.ox_ppb, readings.no2_best_value, readings.temp);
+  nh3.fourAlgorithms(1000*readings.analog[NH3_WE_PIN], 1000*readings.analog[NH3_AE_PIN], readings.nh3_ppb ,readings.temp);
+
+  build_packet_to_SD(print);
+  if(print)
+    print_packet();
+}
+//PACK ------------------------------------------------------------------------------------------------------------------
+
 void setup()
 {
   Serial.begin(115200);
   delay(100);
   Wire.begin(_SDA_, _SCL_, 100000);
-  delay(5000);
 
-  sht_setup();
   ads_setup();
+  setup_sd();
+  sht_setup();
 }
 
-float no2_ppb[4]; 
-float co_ppb[4];
-uint16_t adc;
-
-void loop()
+/*void loop()
 {
   float readed_voltage_we;
   float readed_voltage_ae;
@@ -153,19 +330,6 @@ void loop()
   readed_voltage_ae = ads_read(1, true); //lendo mux porta 1
   //readed_voltage_we = 0.218; //lido por multímetro
   //readed_voltage_ae = 0.187; //lido por multímetro
-
-  //Mux.selectOutput(0);                                          // ADS READ
-  //adc = ads.readADC_SingleEnded(0);
-  //readed_voltage_we = ads.computeVolts(adc);
-  //ets_delay_us(10);
-  //printf("\nReaded voltage on port 0: %f \n", readed_voltage_we);
-  //delay(741);
-  //Mux.selectOutput(1);
-  //adc = ads.readADC_SingleEnded(0);
-  //readed_voltage_ae = ads.computeVolts(adc);
-  //ets_delay_us(10);
-  //printf("\nReaded voltage on port 1: %f \n", readed_voltage_ae);
-
 
   float temp = sht_read(true);
   no2.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, no2_ppb, temp);
@@ -194,10 +358,10 @@ void loop()
 
   delay(5000);
 
-}
-
-/*void loop()
-{
-  ads_read(2, true);
-  delay(1000);
 }*/
+
+void loop()
+{
+  build_packet(false);
+  delay(5000);
+}
