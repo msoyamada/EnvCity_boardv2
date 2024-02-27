@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "SD_test",
+			"path": "../SD_test"
+		}
+	],
+	"settings": {}
+}

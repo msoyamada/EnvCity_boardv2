@@ -2,7 +2,10 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>               
-#include <FS.h>               
+#include <FS.h>        
+
+#include <lmic.h>
+#include <hal/hal.h>
 
 #include <Adafruit_ADS1X15.h>
 #include <Adafruit_SHT31.h>
@@ -13,11 +16,36 @@
 
 // CONFIGS --------------------------------------------------------------------------------------------------------------
 
+/*ordem sensores
+CO
+NO2
+OX
+*/
+
+//Serial
+#define _SERIAL_BAUND_ 115200
+
 //SD SPI
 #define _SD_MOSI_ 7
 #define _SD_MISO_ 5
 #define _SD_SCK_ 6
 #define _SD_CS_ 15
+
+//RFM SPI
+#define _RFM_NSS_ 36
+#define _RFM_RST_ 14
+#define _RFM_DIO0_ 40
+#define _RFM_DIO1_ 41
+#define _RFM_DIO2_ 42
+
+//chaves de autenticação OTAA
+#define _APPEUI_KEY_ 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12                                                          //lsb
+#define _DEVEUI_KEY_ 0x57, 0x49, 0x06, 0xD0, 0x7E, 0xD5, 0xB3, 0x70                                                          //lsb
+#define _APPKEY_KEY_ 0xE4, 0x7B, 0x54, 0x2C, 0x73, 0x47, 0xD0, 0xEC, 0x23, 0xBE, 0x2E, 0xD1, 0xB0, 0x5B, 0x1D, 0xC3          //msb
+
+//Tempos em segundos
+#define _INTERVALO_ENVIO_ 30 
+#define _INTERVALO_LEITURA_ 50
 
 //I2C
 #define _SDA_ 10
@@ -31,7 +59,6 @@ enum sensor_analog_pins{
   NH3_WE_PIN, NH3_AE_PIN,
   TOTAL_ANALOG_PINS,
 };
-
 
 typedef struct _sensors_readings{
   float co_ppb[4];
@@ -49,6 +76,7 @@ typedef struct _sensors_readings{
 
 SensorsReadings readings;
 
+unsigned long tempo_zero = millis();
 // CONFIGS --------------------------------------------------------------------------------------------------------------
 
 //ALPHASENSE ------------------------------------------------------------------------------------------------------------
@@ -256,7 +284,7 @@ void sht_print()
                    4 - co_ae     7 - no2_ae    10 - ox_ae    13 - am_ae
 */
 
-void print_packet()
+void print_sensors()
 {
   printf("Temperatura: %.2f \nHumidade: %.2f\n", readings.temp, readings.humidity);
   printf("CO_PPB: %.5f\nCO_WE: %.5f\nCO_AE: %.5f\n", readings.co_ppb[0], readings.analog[CO_WE_PIN], readings.analog[CO_AE_PIN]);
@@ -289,7 +317,9 @@ void build_packet_to_SD(bool print)
   appendFile(SD, "/data.csv", leitura.c_str());
 }
 
-void build_packet(bool print)
+bool flag_reading = true;
+
+void read_sensors(bool print)
 {
   //leitura de todos os pinos analógicos
   ads_all_read(readings.analog);
@@ -305,63 +335,197 @@ void build_packet(bool print)
 
   build_packet_to_SD(print);
   if(print)
-    print_packet();
+    print_sensors();
+}
+
+void build_packet(uint8_t packet[17])
+{
+  read_sensors(true);
+
+  uint16_t aux = readings.temp*100;
+  packet[0] = (aux >> 8) & 0xFF;
+  packet[1] = aux & 0xFF;
+
+  aux = readings.humidity*100;
+  packet[2] = (aux >> 8) & 0xFF;
+  packet[3] = aux & 0xFF;
+
+  aux = readings.analog[CO_WE_PIN]*10000;
+  packet[4] = (aux >> 8) & 0xFF;
+  packet[5] = aux & 0xFF;
+  aux = readings.analog[CO_AE_PIN]*10000;
+  packet[6] = (aux >> 8) & 0xFF;
+  packet[7] = aux & 0xFF;
+
+  aux = readings.analog[NO2_WE_PIN]*10000;
+  packet[8] = (aux >> 8) & 0xFF;
+  packet[9] = aux & 0xFF;
+  aux = readings.analog[NO2_AE_PIN]*10000;
+  packet[10] = (aux >> 8) & 0xFF;
+  packet[11] = aux & 0xFF;
+
+  aux = readings.analog[OX_WE_PIN]*10000;
+  packet[12] = (aux >> 8) & 0xFF;
+  packet[13] = aux & 0xFF;
+  aux = readings.analog[OX_AE_PIN]*10000;
+  packet[14] = (aux >> 8) & 0xFF;
+  packet[15] = aux & 0xFF;
+}
+
+void reading_loop(bool print)
+{
+  if (((millis() - tempo_zero) < 200) && flag_reading)
+  {
+    read_sensors(print);
+    flag_reading = false;
+  }
+  if ((millis() - tempo_zero) > (200 + (_INTERVALO_LEITURA_*1000)))
+  {
+    tempo_zero = millis();
+    flag_reading = true;
+  }
 }
 //PACK ------------------------------------------------------------------------------------------------------------------
 
+// LMIC -----------------------------------------------------------------------------------------------------------------
+static const u1_t PROGMEM APPEUI[8] = { _APPEUI_KEY_ }; //lsb format
+void os_getArtEui(u1_t *buf) { memcpy_P(buf, APPEUI, 8); }
+static const u1_t PROGMEM DEVEUI[8]  = { _DEVEUI_KEY_ }; // lsb format
+void os_getDevEui(u1_t *buf) { memcpy_P(buf, DEVEUI, 8); }
+static const u1_t PROGMEM APPKEY[16] = { _APPKEY_KEY_ }; //msb format
+void os_getDevKey(u1_t *buf) { memcpy_P(buf, APPKEY, 16); }
+
+static osjob_t sendjob;
+void do_send(osjob_t *j);
+
+static uint8_t payload[17];
+
+const unsigned TX_INTERVAL = _INTERVALO_ENVIO_;
+
+const lmic_pinmap lmic_pins = {
+    .nss = _RFM_NSS_,
+    .rxtx = LMIC_UNUSED_PIN,
+    .rst = _RFM_RST_,
+    .dio = {_RFM_DIO0_, _RFM_DIO1_, _RFM_DIO2_},
+};
+
+void onEvent(ev_t ev)
+{
+    Serial.print(os_getTime());
+    Serial.print(": ");
+    switch (ev)
+    {
+    case EV_SCAN_TIMEOUT:
+        Serial.println(F("EV_SCAN_TIMEOUT"));
+        break;
+    case EV_BEACON_FOUND:
+        Serial.println(F("EV_BEACON_FOUND"));
+        break;
+    case EV_BEACON_MISSED:
+        Serial.println(F("EV_BEACON_MISSED"));
+        break;
+    case EV_BEACON_TRACKED:
+        Serial.println(F("EV_BEACON_TRACKED"));
+        break;
+    case EV_JOINING:
+        Serial.println(F("EV_JOINING"));
+        break;
+    case EV_JOINED:
+        Serial.println(F("EV_JOINED"));
+        break;
+    case EV_JOIN_FAILED:
+        Serial.println(F("EV_JOIN_FAILED"));
+        LMIC_setLinkCheckMode(0);
+        break;
+    case EV_REJOIN_FAILED:
+        Serial.println(F("EV_REJOIN_FAILED"));
+        break;
+    case EV_TXCOMPLETE:
+        Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
+        if (LMIC.txrxFlags & TXRX_ACK)
+            Serial.println(F("Received ack"));
+        if (LMIC.dataLen)
+        {
+            Serial.print(F("Received "));
+            Serial.print(LMIC.dataLen);
+            Serial.println(F(" bytes of payload"));
+        }
+        if (LMIC.dataLen == 1) 
+        {
+            uint8_t dados_recebidos = LMIC.frame[LMIC.dataBeg + 0];
+            Serial.print(F("Dados recebidos: "));
+            Serial.write(dados_recebidos);
+        }
+        // Agenda a transmissão automática com intervalo de TX_INTERVAL
+        os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL), do_send);
+        break;
+    case EV_LOST_TSYNC:
+        Serial.println(F("EV_LOST_TSYNC"));
+        break;
+    case EV_RESET:
+        Serial.println(F("EV_RESET"));
+        break;
+    case EV_RXCOMPLETE:
+        Serial.println(F("EV_RXCOMPLETE"));
+        break;
+    case EV_LINK_DEAD:
+        Serial.println(F("EV_LINK_DEAD"));
+        break;
+    case EV_LINK_ALIVE:
+        Serial.println(F("EV_LINK_ALIVE"));
+        break;
+    case EV_TXSTART:
+        Serial.println(F("EV_TXSTART"));
+        break;
+    case EV_TXCANCELED:
+        Serial.println(F("EV_TXCANCELED"));
+        break;
+    case EV_RXSTART:
+        break;
+    case EV_JOIN_TXCOMPLETE:
+        Serial.println(F("EV_JOIN_TXCOMPLETE: no JoinAccept"));
+        break;
+    default:
+        Serial.print(F("Unknown event: "));
+        Serial.println((unsigned)ev);
+        break;
+    }
+}
+
+void do_send(osjob_t *j)
+{
+    // Verifica se não está ocorrendo uma transmissão no momento TX/RX
+    if (LMIC.opmode & OP_TXRXPEND){
+        Serial.println(F("OP_TXRXPEND, not sending"));
+    }
+    else{
+        //envio
+        build_packet(payload);
+        LMIC_setTxData2(1, payload, sizeof(payload)-1, 0);
+        Serial.println(F("Sended"));
+    }
+}
+// LMIC -----------------------------------------------------------------------------------------------------------------
+
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(_SERIAL_BAUND_);
   delay(100);
   Wire.begin(_SDA_, _SCL_, 100000);
 
   ads_setup();
   setup_sd();
   sht_setup();
+
+  os_init();
+  LMIC_reset();
+  do_send(&sendjob); //Start
 }
-
-/*void loop()
-{
-  float readed_voltage_we;
-  float readed_voltage_ae;
-
-  Serial.println("========= NO2 =========");
-  readed_voltage_we = ads_read(0, true); //lendo mux porta 0
-  readed_voltage_ae = ads_read(1, true); //lendo mux porta 1
-  //readed_voltage_we = 0.218; //lido por multímetro
-  //readed_voltage_ae = 0.187; //lido por multímetro
-
-  float temp = sht_read(true);
-  no2.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, no2_ppb, temp);
-  bestNO2Value = getBestNO2Value(no2_ppb);
-
-  sht_print();
-  Serial.print("NO2 [0]: ");   Serial.println(no2_ppb[0]);
-  Serial.print("NO2 [1]: ");   Serial.println(no2_ppb[1]);
-  Serial.print("NO2 [2]: ");   Serial.println(no2_ppb[2]);
-  Serial.print("NO2 [3]: ");   Serial.println(no2_ppb[3]);
-  Serial.print("best NO2: ");   Serial.println(bestNO2Value); Serial.println(" ");
-
-  Serial.println("========= CO =========");
-  readed_voltage_we = ads_read(2, true);
-  readed_voltage_ae = ads_read(3, true);
-  //readed_voltage_we = 0.556; //lido por multímetro
-  //readed_voltage_ae = 0.336; //lido por multímetro
-  temp = sht_read(true);
-  cob4_s1.fourAlgorithms(1000*readed_voltage_we, 1000*readed_voltage_ae, co_ppb, temp);
-
-  sht_print();
-  Serial.print("COB4 [0]: ");   Serial.println(co_ppb[0]);
-  Serial.print("COB4 [1]: ");   Serial.println(co_ppb[1]);
-  Serial.print("COB4 [2]: ");   Serial.println(co_ppb[2]);
-  Serial.print("COB4 [3]: ");   Serial.println(co_ppb[3]); Serial.println(" ");
-
-  delay(5000);
-
-}*/
 
 void loop()
 {
-  build_packet(false);
-  delay(5000);
+  os_runloop_once();
+  //build_packet(payload);
+  //Serial.println("");
+  //delay(5000);
 }
