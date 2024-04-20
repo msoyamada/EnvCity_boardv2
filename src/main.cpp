@@ -46,8 +46,7 @@ SO2
 #define _APPKEY_KEY_ 0xA5, 0x8B, 0xEC, 0x77, 0x06, 0xCE, 0x14, 0x05, 0x6E, 0xFF, 0xFC, 0x05, 0xAD, 0x71, 0xF2, 0xAB          //msb
 
 //Tempos em segundos
-#define _INTERVALO_ENVIO_ 180 
-//#define _INTERVALO_LEITURA_ 50
+#define _INTERVALO_ENVIO_ 30 //em minutos
 
 //I2C
 #define _SDA_ 10
@@ -471,7 +470,7 @@ void do_send(osjob_t *j);
 
 static uint8_t payload[27];
 
-const unsigned TX_INTERVAL = _INTERVALO_ENVIO_;
+const unsigned TX_INTERVAL = (_INTERVALO_ENVIO_*60);
 
 const lmic_pinmap lmic_pins = {
     .nss = _RFM_NSS_,
